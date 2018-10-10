@@ -5,6 +5,7 @@
 #include <vector>
 #include <tuple> 
 #include <thread>
+#include <stdexcept>
 
 
 
@@ -51,6 +52,49 @@ py::array_t<float> loadExrFile(const std::string &fileName) {
 }
 
 
+void saveExrFile(const std::string &fileName, const py::array_t<float> &data) {
+    
+    if (data.ndim() != 3) {
+        throw std::invalid_argument("Input tensor must be threedimensional");
+    }
+    int height = data.shape(0);
+    int width = data.shape(1);
+    int nChannels = data.shape(2);
+    if (nChannels < 3) {
+        throw std::invalid_argument("Too few color channels (must have at least RGB channels)");
+    }
+
+    std::vector<std::string> channels = {"R", "G", "B"};
+    if (nChannels > 3) 
+        channels.push_back("A");
+
+    Header header(width, height);
+    for (auto &c : channels)
+        header.channels().insert(c.c_str(), Channel(FLOAT));
+
+    OutputFile file(fileName.c_str(), header);
+    FrameBuffer frameBuffer;
+
+    std::vector<std::vector<float>> dataArrays;
+    for (auto &c : channels) 
+        dataArrays.push_back(std::vector<float>(width * height));
+
+    auto dataView = data.unchecked<3>();
+    for (ssize_t i = 0; i < dataView.shape(0); i++) {
+        for (ssize_t j = 0; j < dataView.shape(1); j++) {
+            for (size_t c = 0; c < dataArrays.size(); ++c) {
+                dataArrays[c][j + i * width] = dataView(i, j, c);
+            }
+        }
+    }
+    
+    for (size_t i = 0; i < dataArrays.size(); ++i)
+        frameBuffer.insert(channels[i].c_str(), Slice (FLOAT, (char *) dataArrays[i].data(), sizeof(float) * 1, sizeof(float) * width));
+    
+    file.setFrameBuffer(frameBuffer);
+    file.writePixels(height);
+}
+
 PYBIND11_MODULE(exrpy, m) {
     m.doc() = R"pbdoc(
         Simple EXR bindings.
@@ -58,7 +102,11 @@ PYBIND11_MODULE(exrpy, m) {
 
     m.def("read", &loadExrFile, R"pbdoc(
         Loads an exr image from disk.
+    )pbdoc")
+     .def("write", &saveExrFile, R"pbdoc(
+        Save an exr image to disk.
     )pbdoc");
+
 
 #ifdef VERSION_INFO
     m.attr("__version__") = VERSION_INFO;
