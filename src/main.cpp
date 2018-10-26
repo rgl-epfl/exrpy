@@ -1,71 +1,137 @@
-#include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include <vector>
-#include <tuple> 
-#include <thread>
+#include <memory>
 #include <stdexcept>
+#include <thread>
+#include <tuple>
+#include <vector>
 
-
-
-#include <ImfInputFile.h>
-#include <ImfChannelList.h>
-#include <ImfPartType.h>
-#include <ImfInputPart.h>
-#include <ImfTiledInputPart.h>
-#include <ImfNamespace.h>
 #include <ImathNamespace.h>
+#include <ImfChannelList.h>
+#include <ImfInputFile.h>
+#include <ImfInputPart.h>
+#include <ImfNamespace.h>
+#include <ImfPartType.h>
+#include <ImfTiledInputPart.h>
 
 using namespace OPENEXR_IMF_NAMESPACE;
 using namespace IMATH_NAMESPACE;
 
 namespace py = pybind11;
 
+bool isExrFile(const std::string &fileName) {
+    try {
+        InputFile(fileName.c_str()).header();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+class ExrInputFile {
+
+public:
+    ExrInputFile(const std::string &fileName) {
+        if (!isExrFile(fileName)) {
+            throw std::invalid_argument("File is not EXR file!");
+        }
+
+        m_file   = std::make_unique<InputFile>(fileName.c_str());
+        m_header = m_file->header();
+
+        Box2i dw = m_header.dataWindow();
+        m_width  = dw.max.x - dw.min.x + 1;
+        m_height = dw.max.y - dw.min.y + 1;
+
+        m_header.channels().layers(m_layers);
+    }
+
+    py::array_t<float> get() { return getChannels({ "R", "G", "B" }); }
+
+    py::array_t<float> get(const std::string &channelOrLayerName) {
+        if (m_layers.find(channelOrLayerName) != m_layers.end()) {
+            std::vector<std::string> channelNames;
+            ChannelList::ConstIterator layerBegin, layerEnd;
+            m_header.channels().channelsInLayer(channelOrLayerName, layerBegin,
+                                                layerEnd);
+            for (auto j = layerBegin; j != layerEnd; ++j)
+                channelNames.push_back(j.name());
+
+            return getChannels(channelNames);
+        }
+
+        if (m_header.channels().findChannel(channelOrLayerName))
+            return getChannels({ channelOrLayerName });
+        throw std::invalid_argument("Channel/Layer could not be found!");
+    }
+
+    py::array_t<float> getChannels(const std::vector<std::string> &channels) {
+        py::array_t<float> imgData({ m_height, m_width, channels.size() });
+        std::vector<std::vector<float>> pixelData;
+        Box2i dw = m_header.dataWindow();
+        FrameBuffer fb;
+        for (auto &c : channels) {
+            if (!m_header.channels().findChannel(c))
+                throw std::invalid_argument(
+                    "Channel/Layer could not be found!");
+
+            pixelData.push_back(std::vector<float>(m_width * m_height, 0.0f));
+            fb.insert(c, Slice(FLOAT,
+                               (char *) &(pixelData.back())
+                                   .data()[-dw.min.x - dw.min.y * m_width],
+                               sizeof(float), sizeof(float) * m_width, 1, 1));
+        }
+
+        m_file->setFrameBuffer(fb);
+        m_file->readPixels(dw.min.y, dw.max.y);
+        auto dataView = imgData.mutable_unchecked<3>();
+        for (ssize_t i = 0; i < dataView.shape(0); i++) {
+            for (ssize_t j = 0; j < dataView.shape(1); j++) {
+                for (size_t c = 0; c < channels.size(); ++c) {
+                    dataView(i, j, c) = pixelData[c][j + i * m_width];
+                }
+            }
+        }
+        return imgData;
+    }
+
+private:
+    std::unique_ptr<InputFile> m_file;
+    Header m_header;
+    size_t m_width, m_height;
+    std::vector<std::string> m_channels;
+    std::set<std::string> m_layers;
+};
+
+ExrInputFile open(const std::string &fileName) {
+    return ExrInputFile(fileName);
+}
 
 py::array_t<float> loadExrFile(const std::string &fileName) {
     if (Imf::globalThreadCount() == 0)
         Imf::setGlobalThreadCount(std::thread::hardware_concurrency());
 
-    InputFile file(fileName.c_str());
-    Box2i dw = file.header().dataWindow();
-    int width = dw.max.x - dw.min.x + 1;
-    int height = dw.max.y - dw.min.y + 1;
-    int nPixels = width * height;
-    py::array_t<float> imgData({ height, width, 3 });
-    std::vector<float> r(nPixels, 0.0f), g(nPixels, 0.0f), b(nPixels, 0.0f);
-    FrameBuffer fb;
-    fb.insert("R", Slice(FLOAT, (char*) &r.data()[-dw.min.x - dw.min.y * width], sizeof(float), sizeof(float) * width, 1, 1));
-    fb.insert("G", Slice(FLOAT, (char*) &g.data()[-dw.min.x - dw.min.y * width], sizeof(float), sizeof(float) * width, 1, 1));
-    fb.insert("B", Slice(FLOAT, (char*) &b.data()[-dw.min.x - dw.min.y * width], sizeof(float), sizeof(float) * width, 1, 1));
-    file.setFrameBuffer(fb);
-    file.readPixels(dw.min.y, dw.max.y);
-    auto dataView = imgData.mutable_unchecked<3>();
-    for (ssize_t i = 0; i < dataView.shape(0); i++) {
-        for (ssize_t j = 0; j < dataView.shape(1); j++) {
-            dataView(i, j, 0) = r[j + i * width];
-            dataView(i, j, 1) = g[j + i * width];
-            dataView(i, j, 2) = b[j + i * width];
-        }
-    }
-    return imgData;
+    ExrInputFile f(fileName);
+    return f.get();
 }
 
-
 void saveExrFile(const std::string &fileName, const py::array_t<float> &data) {
-    
+
     if (data.ndim() != 3) {
         throw std::invalid_argument("Input tensor must be threedimensional");
     }
-    int height = data.shape(0);
-    int width = data.shape(1);
+    int height    = data.shape(0);
+    int width     = data.shape(1);
     int nChannels = data.shape(2);
     if (nChannels < 3) {
-        throw std::invalid_argument("Too few color channels (must have at least RGB channels)");
+        throw std::invalid_argument(
+            "Too few color channels (must have at least RGB channels)");
     }
 
-    std::vector<std::string> channels = {"R", "G", "B"};
-    if (nChannels > 3) 
+    std::vector<std::string> channels = { "R", "G", "B" };
+    if (nChannels > 3)
         channels.push_back("A");
 
     Header header(width, height);
@@ -76,7 +142,7 @@ void saveExrFile(const std::string &fileName, const py::array_t<float> &data) {
     FrameBuffer frameBuffer;
 
     std::vector<std::vector<float>> dataArrays;
-    for (auto &c : channels) 
+    for (auto &c : channels)
         dataArrays.push_back(std::vector<float>(width * height));
 
     auto dataView = data.unchecked<3>();
@@ -87,10 +153,12 @@ void saveExrFile(const std::string &fileName, const py::array_t<float> &data) {
             }
         }
     }
-    
+
     for (size_t i = 0; i < dataArrays.size(); ++i)
-        frameBuffer.insert(channels[i].c_str(), Slice (FLOAT, (char *) dataArrays[i].data(), sizeof(float) * 1, sizeof(float) * width));
-    
+        frameBuffer.insert(channels[i].c_str(),
+                           Slice(FLOAT, (char *) dataArrays[i].data(),
+                                 sizeof(float) * 1, sizeof(float) * width));
+
     file.setFrameBuffer(frameBuffer);
     file.writePixels(height);
 }
@@ -103,10 +171,17 @@ PYBIND11_MODULE(exrpy, m) {
     m.def("read", &loadExrFile, R"pbdoc(
         Loads an exr image from disk.
     )pbdoc")
-     .def("write", &saveExrFile, R"pbdoc(
+        .def("write", &saveExrFile, R"pbdoc(
         Save an exr image to disk.
     )pbdoc");
 
+    py::class_<ExrInputFile>(m, "InputFile")
+        .def(py::init<const std::string &>())
+        .def("get", py::overload_cast<>(&ExrInputFile::get),
+             "Get the default layer")
+        .def("get", py::overload_cast<const std::string &>(&ExrInputFile::get),
+             "Get a specific layer or channel")
+        .def("get_channels", &ExrInputFile::getChannels);
 
 #ifdef VERSION_INFO
     m.attr("__version__") = VERSION_INFO;
