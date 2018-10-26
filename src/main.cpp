@@ -178,7 +178,11 @@ PYBIND11_MODULE(exrpy, m) {
         Simple EXR bindings.
     )pbdoc";
 
-    m.def("read", &loadExrFile, R"pbdoc(
+    m.def("is_exr_file", &isExrFile,
+          R"pbdoc(
+        Checks if a file on disk is a valid OpenEXR file.
+    )pbdoc")
+        .def("read", &loadExrFile, R"pbdoc(
         Loads an exr image from disk.
     )pbdoc")
         .def("write", &saveExrFile, R"pbdoc(
