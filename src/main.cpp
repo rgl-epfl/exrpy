@@ -44,8 +44,18 @@ public:
         Box2i dw = m_header.dataWindow();
         m_width  = dw.max.x - dw.min.x + 1;
         m_height = dw.max.y - dw.min.y + 1;
-
         m_header.channels().layers(m_layers);
+
+        const auto &channels = m_header.channels();
+        for (auto i = channels.begin(); i != channels.end(); ++i) {
+            m_channels.push_back(i.name());
+        }
+    }
+
+    std::vector<std::string> getChannelNames() const { return m_channels; }
+
+    std::vector<std::string> getLayerNames() const {
+        return std::vector<std::string>(m_layers.begin(), m_layers.end());
     }
 
     py::array_t<float> get() { return getChannels({ "R", "G", "B" }); }
@@ -181,7 +191,9 @@ PYBIND11_MODULE(exrpy, m) {
              "Get the default layer")
         .def("get", py::overload_cast<const std::string &>(&ExrInputFile::get),
              "Get a specific layer or channel")
-        .def("get_channels", &ExrInputFile::getChannels);
+        .def("get_channels", &ExrInputFile::getChannels)
+        .def_property_readonly("channels", &ExrInputFile::getChannelNames)
+        .def_property_readonly("layers", &ExrInputFile::getLayerNames);
 
 #ifdef VERSION_INFO
     m.attr("__version__") = VERSION_INFO;
