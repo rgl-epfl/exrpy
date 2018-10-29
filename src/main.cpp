@@ -11,10 +11,8 @@
 #include <ImathNamespace.h>
 #include <ImfChannelList.h>
 #include <ImfInputFile.h>
-#include <ImfInputPart.h>
 #include <ImfNamespace.h>
-#include <ImfPartType.h>
-#include <ImfTiledInputPart.h>
+#include <ImfOutputFile.h>
 
 using namespace OPENEXR_IMF_NAMESPACE;
 using namespace IMATH_NAMESPACE;
@@ -29,6 +27,25 @@ bool isExrFile(const std::string &fileName) {
         return false;
     }
 }
+
+struct channel_sorter {
+    inline bool operator()(const std::string &c1, const std::string &c2) {
+        std::map<char, int> mapOrder;
+        mapOrder['R'] = 0;
+        mapOrder['G'] = 1;
+        mapOrder['B'] = 2;
+        mapOrder['A'] = 3;
+        auto it       = mapOrder.find(c1.back());
+        auto it2      = mapOrder.find(c2.back());
+        if (it != mapOrder.end() && it2 != mapOrder.end())
+            return it->second < it2->second;
+        if (it != mapOrder.end())
+            return true;
+        if (it2 != mapOrder.end())
+            return false;
+        return c1 < c2;
+    }
+};
 
 class ExrInputFile {
 
@@ -66,9 +83,11 @@ public:
             ChannelList::ConstIterator layerBegin, layerEnd;
             m_header.channels().channelsInLayer(channelOrLayerName, layerBegin,
                                                 layerEnd);
-            for (auto j = layerBegin; j != layerEnd; ++j)
+            for (auto j = layerBegin; j != layerEnd; ++j) {
                 channelNames.push_back(j.name());
-
+            }
+            std::sort(channelNames.begin(), channelNames.end(),
+                      channel_sorter());
             return getChannels(channelNames);
         }
 
@@ -150,11 +169,8 @@ void saveExrFile(const std::string &fileName, const py::array_t<float> &data) {
 
     OutputFile file(fileName.c_str(), header);
     FrameBuffer frameBuffer;
-
-    std::vector<std::vector<float>> dataArrays;
-    for (auto &c : channels)
-        dataArrays.push_back(std::vector<float>(width * height));
-
+    std::vector<std::vector<float>> dataArrays(
+        channels.size(), std::vector<float>(width * height));
     auto dataView = data.unchecked<3>();
     for (ssize_t i = 0; i < dataView.shape(0); i++) {
         for (ssize_t j = 0; j < dataView.shape(1); j++) {
